@@ -19,3 +19,15 @@ python events_email.py --output email.txt
 
 The script outputs a formatted email body sorted by date (descending) and ranked by a fun
 score within each day. Provide a different URL with `--url` if needed.
+
+## Google Colab
+
+```python
+!pip install -r requirements.txt
+!python -m playwright install chromium
+
+from events_email import generate_email
+
+email_body = generate_email()
+print(email_body)
+```

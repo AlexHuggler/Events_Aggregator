@@ -24,6 +24,7 @@ class Event:
     url: str
     description: str | None = None
     fun_score: int = 0
+    categories: list[str] = dataclasses.field(default_factory=list)
 
 
 def fetch_page_html(url: str) -> str:
@@ -50,6 +51,11 @@ def fetch_page_html(url: str) -> str:
             },
             timeout=30,
         )
+        if response.status_code == 403:
+            raise RuntimeError(
+                "Received 403 from DO214. Install Playwright and run with a "
+                "headless browser session to fetch the page."
+            )
         response.raise_for_status()
         return response.text
 
@@ -168,6 +174,34 @@ def fun_score(event: Event) -> int:
     return score
 
 
+def categorize_event(event: Event) -> list[str]:
+    text = f"{event.title} {event.description or ''}".lower()
+    category_rules = {
+        "Kids events": ["kids", "family", "children", "storybook", "playdate"],
+        "Music events": ["music", "concert", "live", "dj", "band", "festival"],
+        "Adult outings": [
+            "happy hour",
+            "cocktail",
+            "wine",
+            "beer",
+            "brewery",
+            "nightlife",
+            "21+",
+        ],
+        "Comedy": ["comedy", "stand-up", "improv"],
+        "Food & Drink": ["food", "tasting", "brunch", "dinner"],
+        "Markets & Shopping": ["market", "bazaar", "shopping", "pop-up"],
+        "Outdoor & Fitness": ["outdoor", "hike", "yoga", "fitness", "run"],
+        "Workshops": ["workshop", "class", "learn", "lesson"],
+    }
+    categories = [
+        category
+        for category, keywords in category_rules.items()
+        if any(keyword in text for keyword in keywords)
+    ]
+    return categories or ["General"]
+
+
 def within_next_two_months(event: Event, reference: datetime) -> bool:
     window_end = reference + relativedelta(months=2)
     return reference <= event.start_date <= window_end
@@ -202,14 +236,34 @@ def build_email_body(events: Iterable[Event]) -> str:
             reverse=True,
         ):
             time_str = event.start_date.strftime("%I:%M %p").lstrip("0")
+            categories = ", ".join(event.categories)
             lines.append(
                 f"• {event.title} ({time_str}) [Fun score: {event.fun_score}]\n"
+                f"  Categories: {categories}\n"
                 f"  {event.url}"
             )
         lines.append("")
 
     lines.append("Have fun!")
     return "\n".join(lines)
+
+
+def generate_email(url: str = URL) -> str:
+    html = fetch_page_html(url)
+    soup = BeautifulSoup(html, "html.parser")
+
+    events = parse_json_ld_events(soup)
+    if not events:
+        events = parse_fallback_events(soup)
+
+    now = datetime.now(timezone.utc)
+    filtered = [event for event in events if within_next_two_months(event, now)]
+    for event in filtered:
+        event.fun_score = fun_score(event)
+        event.categories = categorize_event(event)
+
+    sorted_events = sorted(filtered, key=lambda e: e.start_date, reverse=True)
+    return build_email_body(sorted_events)
 
 
 def main() -> None:
@@ -227,20 +281,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    html = fetch_page_html(args.url)
-    soup = BeautifulSoup(html, "html.parser")
-
-    events = parse_json_ld_events(soup)
-    if not events:
-        events = parse_fallback_events(soup)
-
-    now = datetime.now(timezone.utc)
-    filtered = [event for event in events if within_next_two_months(event, now)]
-    for event in filtered:
-        event.fun_score = fun_score(event)
-
-    sorted_events = sorted(filtered, key=lambda e: e.start_date, reverse=True)
-    email_body = build_email_body(sorted_events)
+    email_body = generate_email(args.url)
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as handle:
